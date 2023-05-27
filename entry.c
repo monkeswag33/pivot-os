@@ -47,6 +47,8 @@ typedef struct
     uint64_t p_align;       /* Segment alignment */
 } Elf64_Phdr;
 
+static efi_guid_t ACPI_20_TABLE = ACPI_20_TABLE_GUID;
+
 /**
  * Load an ELF executable and pass control over for good
  */
@@ -158,6 +160,13 @@ int main(int argc, char **argv)
         return 0;
     }
     free(buff);
+
+    struct configuration_table_t config_table;
+    efi_configuration_table_t *ect = ST->ConfigurationTable;
+    for (int i = 0; i < ST->NumberOfTableEntries; i++, ect++)
+        if (!memcmp(&ect->VendorGuid, &ACPI_20_TABLE, sizeof(efi_guid_t)))
+            config_table.rsdp_ptr = ect->VendorTable;
+    bootparam.config_table = config_table;
 
     if(exit_bs()) {
         fprintf(stderr,
