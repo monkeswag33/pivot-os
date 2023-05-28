@@ -1,4 +1,5 @@
 #include "mem.h"
+#include "paging.h"
 
 void *
 memset (void *dest, register int val, register size_t len)
@@ -22,3 +23,18 @@ memcmp (const void *str1, const void *str2, size_t count)
     }
   return 0;
 }
+
+void *malloc(size_t size) {
+    size_t pages = size / 4096;
+    int extra = size % 4096;
+    if (extra)
+        pages++;
+    void *first_page = alloc_page();
+    for (size_t i = 1; i < pages; i++)
+        alloc_page();
+    return first_page;
+}
+
+void free(void*) {}
+
+void *realloc(void*, size_t size) { return malloc(size); }

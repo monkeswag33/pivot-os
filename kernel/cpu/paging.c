@@ -18,7 +18,7 @@ struct page_table_t pml4;
 
 void map_page(uint64_t logical);
 
-void *alloc_page() {
+void *alloc_page(void) {
     void *page = (void*) next_alloc_page;
     next_alloc_page += 0x1000;
     return page;

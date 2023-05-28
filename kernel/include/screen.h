@@ -1,8 +1,7 @@
 #pragma once
+#include <stdarg.h>
 #include "bootparam.h"
 
 void init_screen(void);
-void print_char(char c);
-void print_string(char* s);
-void print_num(long long num);
-void print_hex(long long num);
+void vprintf(const char *fmt, va_list args);
+void printf(const char *fmt, ...);

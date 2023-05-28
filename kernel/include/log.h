@@ -8,5 +8,5 @@ enum LogLevel {
     Error
 };
 
-void log(enum LogLevel level, char* target, char* msg);
-void log_num(enum LogLevel level, char* target, long long num);
+void log(enum LogLevel level, const char* target, const char* fmt, ...);
+void log_no_nl(enum LogLevel level, const char* target, const char* fmt, ...);

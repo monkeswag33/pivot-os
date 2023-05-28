@@ -1,7 +1,7 @@
 #include "log.h"
 #include "screen.h"
 
-void print_level_target(enum LogLevel level, char *target) {
+void print_level_target(enum LogLevel level, const char *target) {
     char* str;
     switch (level) {
         case Error:
@@ -19,22 +19,25 @@ void print_level_target(enum LogLevel level, char *target) {
         case Trace:
             str = "TRACE";
     }
-
-    print_char('(');
-    print_string(target);
-    print_string(") ");
-    print_string(str);
-    print_string(": ");
+    printf("(%s) %s: ", target, str);
 }
 
-void log(enum LogLevel level, char* target, char* msg) {
+void vlog(enum LogLevel level, const char *target, const char *fmt, va_list args) {
     print_level_target(level, target);
-    print_string(msg);
-    print_char('\n');
+    vprintf(fmt, args);
 }
 
-void log_num(enum LogLevel level, char* target, long long num) {
-    print_level_target(level, target);
-    print_num(num);
-    print_char('\n');
+void log_no_nl(enum LogLevel level, const char *target, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vlog(level, target, fmt, args);
+    va_end(args);
+}
+
+void log(enum LogLevel level, const char* target, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vlog(level, target, fmt, args);
+    va_end(args);
+    printf("\n");
 }

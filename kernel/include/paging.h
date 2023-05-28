@@ -7,3 +7,4 @@ struct page_table_t { uint64_t entries[512]; };
 
 void map_page(uint64_t logical);
 void setup_paging(void);
+void *alloc_page(void);

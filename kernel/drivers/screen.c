@@ -1,6 +1,7 @@
 #include "string.h"
 #include "screen.h"
 #include "log.h"
+#include "printf.h"
 #define SSFN_CONSOLEBITMAP_TRUECOLOR
 #define SSFN_CONSOLEBITMAP_CONTROL
 #include "ssfn.h"
@@ -24,7 +25,7 @@ void init_screen(void) {
     log(Info, "SCREEN", "Initialized framebuffer");
 }
 
-void print_char(char c) {
+static void print_char(char c) {
     ssfn_putc(c);
     if (c == '\n') {
         uint32_t last_line = bootp->pitch * ssfn_src->height * (num_rows - 1);
@@ -33,20 +34,56 @@ void print_char(char c) {
     }
 }
 
-void print_string(char* s) {
+static void print_string(char* s) {
     for (char* str = s; *str != '\0'; str++)
         print_char(*str);
 }
 
-void print_num(long long num) {
+static void print_num(long long num) {
     char str_num[21]; // Max 64 bit integer is 20 digits + null terminator
     itoa(num, str_num, 21, 10);
     print_string(str_num);
 }
 
-void print_hex(long long num) {
+static void print_hex(long long num) {
     char str_num[21];
     itoa(num, str_num, 21, 16);
     print_string("0x");
     print_string(str_num);
+}
+
+void vprintf(const char* c, va_list args) {
+    while (*c != '\0') {
+        if (*c != '%') {
+            print_char(*c);
+            c++;
+            continue;
+        }
+        c++;
+        switch (*c) {
+            case 's':
+                print_string(va_arg(args, char *));
+                break;
+
+            case 'c':
+                print_char(va_arg(args, int));
+                break;
+
+            case 'd':
+                print_num(va_arg(args, int));
+                break;
+
+            case 'x':
+                print_hex(va_arg(args, int));
+                break;
+        }
+        c++;
+    }
+}
+
+void printf(const char *c, ...) {
+    va_list args;
+    va_start(args, c);
+    vprintf(c, args);
+    va_end(args);
 }

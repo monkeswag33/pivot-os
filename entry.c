@@ -73,18 +73,18 @@ int main(int argc, char **argv)
 
     status = BS->GetMemoryMap(&memory_map_size, NULL, &map_key, &desc_size, NULL);
     if (status != EFI_BUFFER_TOO_SMALL || !memory_map_size) {
-        printf("Unable to get memory map\n");
+        fprintf(stderr, "Unable to get memory map\n");
         return 1;
     }
     memory_map_size += 4 * desc_size;
     memory_map = (efi_memory_descriptor_t*) malloc(memory_map_size);
     if (!memory_map) {
-        printf("Unable to allocate memory\n");
+        fprintf(stderr, "Unable to allocate memory\n");
         return 1;
     }
     status = BS->GetMemoryMap(&memory_map_size, memory_map, &map_key, &desc_size, NULL);
     if (EFI_ERROR(status)) {
-        printf("Unable to get memory map\n");
+        fprintf(stderr, "Unable to get memory map\n");
         return 1;
     }
     int num_regions = memory_map_size / desc_size;
