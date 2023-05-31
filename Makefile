@@ -6,7 +6,7 @@ include uefi/Makefile
 
 .PHONY = run
 run: $(TARGET) $(ALSO)
-	uefi-run $(TARGET) -f $(ALSO)
+	uefi-run $(TARGET) -f $(ALSO) -- -smp 2
 
 $(ALSO): FORCE
 	make -C kernel

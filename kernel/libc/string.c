@@ -1,4 +1,5 @@
 #include "string.h"
+#include "screen.h"
 
 size_t strlen(const char *str) {
         const char *s;
@@ -6,14 +7,14 @@ size_t strlen(const char *str) {
                 ;
         return (s - str);
 }
-int
-itoa(long long num, char* str, int len, int base)
+void
+itoa(int num, char* str, int len, int base)
 {
-        long long sum = num;
+        int sum = num;
         int i = 0;
         int digit;
         if (len == 0)
-                return -1;
+                return;
         do
         {
                 digit = sum % base;
@@ -21,14 +22,45 @@ itoa(long long num, char* str, int len, int base)
                         str[i++] = '0' + digit;
                 else
                         str[i++] = 'A' + digit - 0xA;
+                printf("%c\n", str[i - 1]);
                 sum /= base;
         }while (sum && (i < (len - 1)));
         if (i == (len - 1) && sum)
-                return -1;
+                return;
         str[i] = '\0';
         strrev(str);
-        return 0;
 }
+
+char *ultoa(unsigned long num, char *str, int radix) {
+    char temp[33];  //an int can only be 16 bits long
+                    //at radix 2 (binary) the string
+                    //is at most 16 + 1 null long.
+    int temp_loc = 0;
+    int digit;
+    int str_loc = 0;
+
+    //construct a backward string of the number.
+    do {
+        digit = (unsigned long)num % radix;
+        if (digit < 10) 
+            temp[temp_loc++] = digit + '0';
+        else
+            temp[temp_loc++] = digit - 10 + 'A';
+        num /= radix;
+    } while ((unsigned long)num > 0);
+
+    temp_loc--;
+
+
+    //now reverse the string.
+    while ( temp_loc >=0 ) {// while there are still chars
+        str[str_loc++] = temp[temp_loc--];    
+    }
+    str[str_loc] = 0; // add null termination.
+
+    return str;
+}
+
 void
 strrev(char *str)
 {

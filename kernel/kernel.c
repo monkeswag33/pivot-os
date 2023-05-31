@@ -15,5 +15,6 @@ void _start(bootparam_t *bootparam)
     load_idt();
     setup_paging();
     init_acpi();
+    
     while (1);
 }
