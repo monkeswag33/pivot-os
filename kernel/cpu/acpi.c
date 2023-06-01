@@ -175,21 +175,21 @@ void handle_madt(struct madt_header_t *madt) {
         entry += *(entry + 1);
     }
     lapic = (volatile uint32_t*)(uintptr_t) madt->local_interrupt_controller_address;
-    // lapic[SVR] = ENABLE | 33;
-    // lapic[ERROR] = 34;
-    // lapic[DFR] = 0xFFFFFFFF;
-    // lapic[TPR] = 0;
-    // lapic[LINT0] = MASKED;
-    // lapic[LINT1] = MASKED;
-    // lapic[TDCR] = X1;
-    // lapic[TIMER] = PERIODIC | 32;
-    // lapic[ESR] = 0;
-    // lapic[ESR] = 0;
-    // lapic[TICR] = 100000;
+    lapic[SVR] = ENABLE | 33;
+    lapic[ERROR] = 34;
+    lapic[DFR] = 0xFFFFFFFF;
+    lapic[TPR] = 0;
+    lapic[LINT0] = MASKED;
+    lapic[LINT1] = MASKED;
+    lapic[TDCR] = X1;
+    lapic[TIMER] = PERIODIC | 32;
+    lapic[ESR] = 0;
+    lapic[ESR] = 0;
+    lapic[TICR] = 100000;
 }
 
 void apic_eoi(void) {
-    lapic[EOI] = 0;
+    lapic[EOI] = 1;
 }
 
 void init_acpi(void) {
