@@ -1,4 +1,4 @@
-use std::{cmp::max, collections::HashMap, fs::{File, OpenOptions}, io::{self, Seek}, path::{Path, PathBuf}, process::Command};
+use std::{cmp::max, collections::HashMap, fs::File, io, path::{Path, PathBuf}, process::Command};
 
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
 

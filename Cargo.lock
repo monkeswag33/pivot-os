@@ -242,6 +242,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qemu-exit"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bb0fd6580eeed0103c054e3fba2c2618ff476943762f28a645b63b8692b21c9"
+
+[[package]]
 name = "quote"
 version = "1.0.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -348,6 +354,7 @@ dependencies = [
  "cfg-if",
  "log",
  "ptr_meta",
+ "qemu-exit",
  "ucs2",
  "uefi-macros",
  "uefi-raw",
