@@ -49,7 +49,7 @@ fn create_fat_filesystem(files: HashMap<&str, &Path>, file: &File) {
 
     for (path, source) in files {
         let target_path = Path::new(&path);
-        for ancestor in target_path.ancestors().collect::<Vec<_>>().into_iter().skip(1).rev().skip(1) {
+        for ancestor in target_path.ancestors().collect::<Vec<_>>().iter().skip(1).rev().skip(1) {
             root_dir.create_dir(&ancestor.to_str().unwrap()).unwrap();
         }
 

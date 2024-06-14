@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+elf = { version = "0.7.4", default-features = false }
 log = "0.4.21"
 once_cell = { version = "1.19.0", default-features = false }
 spin = { version = "0.9.8", default-features = false, features = ["mutex", "rwlock", "spin_mutex"] }
