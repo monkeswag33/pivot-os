@@ -14,6 +14,6 @@ panic = "abort"
 
 [build-dependencies]
 bootloader = { path = "bootloader", artifact = "bin", target = "x86_64-unknown-uefi" }
-fatfs = "0.3.6"
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+fatfs = "0.3.6"
 tempfile = "3.10.1"

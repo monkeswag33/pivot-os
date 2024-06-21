@@ -3,21 +3,17 @@
 
 use core::panic::PanicInfo;
 
-use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
+use uart_16550::SerialPort;
 
-const CONFIG: BootloaderConfig = {
-    let mut config = BootloaderConfig::new_default();
-    config.kernel_stack_size = 4096;
-    config
-};
-
-entry_point!(kernel_main, config = &CONFIG);
-
-fn kernel_main(_bi: &'static mut BootInfo) -> ! {
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    let mut serial_port = unsafe { SerialPort::new(0x3F8) };
+    serial_port.init();
+    serial_port.send(97);
     loop {}
 }
 
 #[panic_handler]
-fn panic_handler(_info: &PanicInfo) -> ! {
+fn panic(_: &PanicInfo) -> ! {
     loop {}
 }

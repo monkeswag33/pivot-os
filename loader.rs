@@ -1,11 +1,11 @@
 use core::slice;
-
 use elf::{abi::PT_LOAD, endian::LittleEndian, segment::ProgramHeader, ElfBytes};
-use uefi::{prelude::*, proto::media::{file::{File, FileAttribute, FileInfo, FileMode, RegularFile}, fs::SimpleFileSystem}, table::boot::{AllocateType, MemoryType}};
+use uefi::{prelude::*, proto::media::file::{File, FileAttribute, FileInfo, FileMode, RegularFile}, table::boot::MemoryType};
+use x86_64::structures::paging::Page;
 
-use crate::PAGE_SIZE;
+use crate::{allocate_pages, mem::{CFromInto, PagingManager, UEFIFrameAllocator}, KERNEL_OFFSET, KERNEL_PT_ENTRY, PAGE_SIZE};
 
-pub fn load_kernel(bs: &BootServices) {
+pub fn load_kernel(bs: &BootServices, pmgr: &mut PagingManager<UEFIFrameAllocator>) -> u64 {
     let mut file = get_file(bs);
     let buffer = unsafe {
         // TODO: Handle buffer too small
@@ -35,9 +35,10 @@ pub fn load_kernel(bs: &BootServices) {
         elf_file.segments().expect("Error reading ELF segments")
             .iter().filter(|s| s.p_type == PT_LOAD)
     } {
-        load_segment(bs, segment, &mut file);
+        load_segment(bs, pmgr, segment, &mut file);
     }
     log::info!("Loaded kernel segments");
+    elf_file.ehdr.e_entry
 }
 
 fn get_file(bs: &BootServices) -> RegularFile {
@@ -53,19 +54,24 @@ fn get_file(bs: &BootServices) -> RegularFile {
     file.into_regular_file().expect("Failed to turn FileHandle -> RegularFile")
 }
 
-fn load_segment(bs: &BootServices, segment: ProgramHeader, file: &mut RegularFile) {
+fn load_segment(bs: &BootServices, pmgr: &mut PagingManager<UEFIFrameAllocator>, segment: ProgramHeader, file: &mut RegularFile) {
     let mem_offset = segment.p_vaddr % PAGE_SIZE;
-    let num_pages = (segment.p_memsz + mem_offset).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+    let num_pages = (segment.p_memsz + mem_offset).div_ceil(PAGE_SIZE);
+    let range = allocate_pages(bs, num_pages as usize);
     let buffer = unsafe {
-        let addr = bs
-            .allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages as usize)
-            .expect("Error allocating pages for ELF segment") + mem_offset as u64;
         slice::from_raw_parts_mut(
-            addr as *mut u8,
+            (range.start.cinto() + mem_offset) as *mut u8,
             segment.p_memsz as usize
         )
     };
     file.set_position(segment.p_offset).expect("Error setting position of file");
     file.read(buffer).expect("Error reading segment data");
-    // let page = align_addr(buffer.as_ptr() as u64);
+    let vaddr = Page::cfrom(KERNEL_OFFSET + segment.p_vaddr);
+    pmgr.map_range(
+        range.start,
+        vaddr,
+        KERNEL_PT_ENTRY,
+        range.end - range.start
+    );
+    log::debug!("Mapped {} pages {:?} to {:?}", num_pages, range.start, vaddr);
 }

@@ -1,13 +1,5 @@
-use core::slice;
-
+use common::FrameBufferInfo;
 use uefi::{prelude::*, proto::console::gop::GraphicsOutput};
-
-pub struct FrameBufferInfo {
-    pub width: usize,
-    pub height: usize,
-    pub stride: usize,
-    pub fb: &'static mut [u8]
-}
 
 pub fn configure_graphics(st: &SystemTable<Boot>) -> FrameBufferInfo {
     let gop_handle = st.boot_services()
@@ -23,11 +15,11 @@ pub fn configure_graphics(st: &SystemTable<Boot>) -> FrameBufferInfo {
 
     let info = mode.info();
     let mut framebuffer = gop.frame_buffer();
-    let fb_slice = unsafe { slice::from_raw_parts_mut(framebuffer.as_mut_ptr(), framebuffer.size()) };
+    log::info!("Configured graphics");
     FrameBufferInfo {
         width: info.resolution().0,
         height: info.resolution().1,
         stride: info.stride(),
-        fb: fb_slice
+        fb: framebuffer.as_mut_ptr()
     }
 }

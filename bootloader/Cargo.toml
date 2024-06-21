@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-elf = { version = "0.7.4", default-features = false }
+bootloader_api = "0.11.7"
+conquer-once = { version = "0.4.0", default-features = false }
 log = "0.4.21"
-once_cell = { version = "1.19.0", default-features = false }
-spin = { version = "0.9.8", default-features = false, features = ["mutex", "rwlock", "spin_mutex"] }
+noto-sans-mono-bitmap = { version = "0.3.0", default-features = false, features = ["regular", "size_20", "unicode-basic-latin", "unicode-specials"] }
+spinning_top = "0.3.0"
 uart_16550 = "0.3.0"
-uefi = { version = "0.28.0", features = ["alloc", "global_allocator", "logger", "panic_handler", "qemu"] }
+uefi = { version = "0.28.0", features = ["panic_handler"] }
+x86_64 = "0.15.1"
+xmas-elf = "0.9.1"
