@@ -13,3 +13,4 @@ uart_16550 = "0.3.0"
 uefi = { version = "0.28.0", features = ["panic_handler"] }
 x86_64 = "0.15.1"
 xmas-elf = "0.9.1"
+common = { workspace = true }

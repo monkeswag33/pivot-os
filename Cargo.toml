@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = [ "bootloader", "kernel" ]
+members = [ "bootloader", "common", "kernel" ]
 
 [profile.release]
 panic = "abort"
@@ -17,3 +17,6 @@ bootloader = { path = "bootloader", artifact = "bin", target = "x86_64-unknown-u
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 fatfs = "0.3.6"
 tempfile = "3.10.1"
+
+[workspace.dependencies]
+common = { path = "common" }

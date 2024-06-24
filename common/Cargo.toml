@@ -1,0 +1,14 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bootloader_api = "0.11.7"
+log = "0.4.21"
+noto-sans-mono-bitmap = { version = "0.3.0", features = ["size_20", "unicode-specials"] }
+once_cell = { version = "1.19.0", default-features = false }
+spin = "0.9.8"
+uart_16550 = "0.3.0"
+uefi = { version = "0.28.0", default-features = false }
+x86_64 = { version = "0.15.1", default-features = false }

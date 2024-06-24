@@ -1,9 +1,24 @@
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
-use core::fmt;
-use font_constants::BACKUP_CHAR;
+use core::{fmt, slice};
 use noto_sans_mono_bitmap::{
     get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
 };
+
+#[derive(Debug, Copy, Clone)]
+pub struct FrameBuffer {
+    pub buffer: *mut u8,
+    pub size: usize,
+    pub info: FrameBufferInfo
+}
+
+/// Allows logging text to a pixel-based framebuffer.
+#[derive(Debug)]
+pub struct FrameBufferWriter {
+    buffer: &'static mut [u8],
+    info: FrameBufferInfo,
+    x_pos: usize,
+    y_pos: usize,
+}
 
 /// Additional vertical space between lines
 const LINE_SPACING: usize = 2;
@@ -14,49 +29,37 @@ const LETTER_SPACING: usize = 0;
 const BORDER_PADDING: usize = 1;
 
 /// Constants for the usage of the [`noto_sans_mono_bitmap`] crate.
-mod font_constants {
-    use super::*;
+/// Height of each char raster. The font size is ~0.84% of this. Thus, this is the line height that
+/// enables multiple characters to be side-by-side and appear optically in one line in a natural way.
+pub const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size20;
 
-    /// Height of each char raster. The font size is ~0.84% of this. Thus, this is the line height that
-    /// enables multiple characters to be side-by-side and appear optically in one line in a natural way.
-    pub const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size20;
+/// The width of each single symbol of the mono space font.
+pub const CHAR_RASTER_WIDTH: usize = get_raster_width(FontWeight::Regular, CHAR_RASTER_HEIGHT);
 
-    /// The width of each single symbol of the mono space font.
-    pub const CHAR_RASTER_WIDTH: usize = get_raster_width(FontWeight::Regular, CHAR_RASTER_HEIGHT);
+/// Backup character if a desired symbol is not available by the font.
+/// The '�' character requires the feature "unicode-specials".
+pub const BACKUP_CHAR: char = '�';
 
-    /// Backup character if a desired symbol is not available by the font.
-    /// The '�' character requires the feature "unicode-specials".
-    pub const BACKUP_CHAR: char = '�';
-
-    pub const FONT_WEIGHT: FontWeight = FontWeight::Regular;
-}
+pub const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 
 /// Returns the raster of the given char or the raster of [`font_constants::BACKUP_CHAR`].
 fn get_char_raster(c: char) -> RasterizedChar {
     fn get(c: char) -> Option<RasterizedChar> {
         get_raster(
             c,
-            font_constants::FONT_WEIGHT,
-            font_constants::CHAR_RASTER_HEIGHT,
+            FONT_WEIGHT,
+            CHAR_RASTER_HEIGHT,
         )
     }
     get(c).unwrap_or_else(|| get(BACKUP_CHAR).expect("Should get raster of backup char."))
 }
 
-/// Allows logging text to a pixel-based framebuffer.
-pub struct FrameBufferWriter {
-    framebuffer: &'static mut [u8],
-    info: FrameBufferInfo,
-    x_pos: usize,
-    y_pos: usize,
-}
-
 impl FrameBufferWriter {
     /// Creates a new logger that uses the given framebuffer.
-    pub fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
+    pub fn new(fb: FrameBuffer) -> Self {
         let mut logger = Self {
-            framebuffer,
-            info,
+            buffer: unsafe { slice::from_raw_parts_mut(fb.buffer, fb.size) },
+            info: fb.info,
             x_pos: 0,
             y_pos: 0,
         };
@@ -65,7 +68,7 @@ impl FrameBufferWriter {
     }
 
     fn newline(&mut self) {
-        self.y_pos += font_constants::CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
+        self.y_pos += CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
         self.carriage_return()
     }
 
@@ -77,7 +80,7 @@ impl FrameBufferWriter {
     pub fn clear(&mut self) {
         self.x_pos = BORDER_PADDING;
         self.y_pos = BORDER_PADDING;
-        self.framebuffer.fill(0);
+        self.buffer.fill(0);
     }
 
     fn width(&self) -> usize {
@@ -95,12 +98,12 @@ impl FrameBufferWriter {
             '\n' => self.newline(),
             '\r' => self.carriage_return(),
             c => {
-                let new_xpos = self.x_pos + font_constants::CHAR_RASTER_WIDTH;
+                let new_xpos = self.x_pos + CHAR_RASTER_WIDTH;
                 if new_xpos >= self.width() {
                     self.newline();
                 }
                 let new_ypos =
-                    self.y_pos + font_constants::CHAR_RASTER_HEIGHT.val() + BORDER_PADDING;
+                    self.y_pos + CHAR_RASTER_HEIGHT.val() + BORDER_PADDING;
                 if new_ypos >= self.height() {
                     self.clear();
                 }
@@ -135,7 +138,7 @@ impl FrameBufferWriter {
         };
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let byte_offset = pixel_offset * bytes_per_pixel;
-        self.framebuffer[byte_offset..(byte_offset + bytes_per_pixel)]
+        self.buffer[byte_offset..(byte_offset + bytes_per_pixel)]
             .copy_from_slice(&color[..bytes_per_pixel]);
     }
 }
