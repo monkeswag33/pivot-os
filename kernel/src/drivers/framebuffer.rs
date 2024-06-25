@@ -1,15 +1,7 @@
-use bootloader_api::info::{FrameBufferInfo, PixelFormat};
-use core::{fmt, slice};
-use noto_sans_mono_bitmap::{
-    get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
-};
+use core::fmt;
 
-#[derive(Debug, Copy, Clone)]
-pub struct FrameBuffer {
-    pub buffer: *mut u8,
-    pub size: usize,
-    pub info: FrameBufferInfo
-}
+use bootloader_api::info::{FrameBuffer, FrameBufferInfo, PixelFormat};
+use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar};
 
 /// Allows logging text to a pixel-based framebuffer.
 #[derive(Debug)]
@@ -56,12 +48,14 @@ fn get_char_raster(c: char) -> RasterizedChar {
 
 impl FrameBufferWriter {
     /// Creates a new logger that uses the given framebuffer.
-    pub fn new(fb: FrameBuffer) -> Self {
+    pub fn new(fb: &'static mut FrameBuffer) -> Self {
+        let info = fb.info();
+        assert!(info.bytes_per_pixel == 4, "BPP != 4");
         let mut logger = Self {
-            buffer: unsafe { slice::from_raw_parts_mut(fb.buffer, fb.size) },
-            info: fb.info,
+            buffer: fb.buffer_mut(),
+            info,
             x_pos: 0,
-            y_pos: 0,
+            y_pos: 0
         };
         logger.clear();
         logger

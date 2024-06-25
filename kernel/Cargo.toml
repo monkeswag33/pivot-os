@@ -5,8 +5,11 @@ edition = "2021"
 
 [dependencies]
 uart_16550 = "0.3.0"
-common = { workspace = true }
 x86_64 = "0.15.1"
 uefi = { version = "0.28.0", default-features = false }
 log = "0.4.21"
-spin = "0.9.8"
+spin = { version = "0.9.8", default-features = false, features = ["lazy"] }
+paste = "1.0.15"
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
+bootloader_api = "0.11.7"
+noto-sans-mono-bitmap = { version = "0.3.0", features = ["size_20", "unicode-specials"] }

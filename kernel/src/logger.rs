@@ -1,11 +1,13 @@
-use core::{borrow::Borrow, cell::{Cell, RefCell}, fmt::Write, sync::atomic::{AtomicBool, Ordering}};
-use spin::{Mutex, Once, RwLock};
+use core::{cell::RefCell, fmt::Write};
+use bootloader_api::info::FrameBuffer;
+use spin::Once;
 use uart_16550::SerialPort;
 
-use crate::framebuffer::{FrameBuffer, FrameBufferWriter};
+use crate::drivers::framebuffer::FrameBufferWriter;
 
 /// The global logger instance used for the `log` crate.
-pub static LOGGER: Once<LockedLogger> = Once::new();
+static LOGGER: Once<LockedLogger> = Once::new();
+
 /// A logger instance protected by a spinlock.
 #[derive(Debug)]
 pub struct LockedLogger {
@@ -17,7 +19,7 @@ unsafe impl Sync for LockedLogger {}
 
 impl LockedLogger {
     /// Create a new instance that logs to the given framebuffer.
-    pub fn new(fb: Option<FrameBuffer>, serial: SerialPort) -> Self {
+    pub fn new(fb: Option<&'static mut FrameBuffer>, serial: SerialPort) -> Self {
         let fb = RefCell::new(
             fb.map(|f| FrameBufferWriter::new(f))
         );
@@ -25,10 +27,6 @@ impl LockedLogger {
             framebuffer: fb,
             serial: RefCell::new(serial)
         }
-    }
-
-    pub fn set_framebuffer(&self, fb: FrameBuffer) {
-        self.framebuffer.replace_with(|_| Some(FrameBufferWriter::new(fb)));
     }
 }
 
@@ -50,7 +48,7 @@ impl log::Log for LockedLogger {
     fn flush(&self) {}
 }
 
-pub fn init_logger(fb: Option<FrameBuffer>) {
+pub fn init_logger(fb: Option<&'static mut FrameBuffer>) {
     let mut port = unsafe { SerialPort::new(0x3F8) };
     port.init();
     let logger = LockedLogger::new(fb, port);

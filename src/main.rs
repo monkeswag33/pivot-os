@@ -2,6 +2,8 @@ use std::{env::var, process::Command};
 
 fn main() {
     let uefi_path = env!("UEFI_PATH");
+    let kernel_path = env!("KERNEL_ELF");
+    println!("Kernel ELF: {}", kernel_path);
     let init_stop = var("INIT_STOP");
 
     let mut cmd = Command::new("qemu-system-x86_64");
@@ -13,14 +15,7 @@ fn main() {
     cmd.arg("-no-reboot");
     cmd.arg("-no-shutdown");
     cmd.arg("-enable-kvm");
-    match init_stop {
-        Ok(init_stop) => {
-            if init_stop == "1" {
-                cmd.args(["-s", "-S"]);
-            }
-        },
-        Err(_) => {}
-    }
+    _ = init_stop.inspect(|s| if s == "1" { cmd.args(["-s", "-S"]); });
     cmd.args(["-drive", format!("file={},index=0,media=disk,format=raw", uefi_path).as_str()]);
     cmd.spawn().unwrap().wait().unwrap();
 }

@@ -1,75 +1,51 @@
-use crate::{create_boot_info, mem::MMAPFrameAllocator, set_up_mappings, SystemInfo, PAGE_SIZE};
-use core::{arch::asm, slice};
+use bootloader_api::info::TlsTemplate;
+use bootloader_x86_64_common::{level_4_entries::UsedLevel4Entries, load_kernel::VirtualAddressOffset};
+use core::{cmp, iter::Step, mem::size_of};
 
-use common::BootInfo;
-use uefi::{cstr16, proto::media::file::{File, FileAttribute, FileInfo, FileMode}, table::{boot::{AllocateType, MemoryType}, Boot, SystemTable}, CStr16};
 use x86_64::{
     align_up,
     structures::paging::{
-        mapper::{MappedFrame, TranslateResult}, FrameAllocator, Mapper, Page, PageSize, PageTableFlags as Flags, PhysFrame, Size4KiB, Translate
+        mapper::{MappedFrame, MapperAllSizes, TranslateResult},
+        FrameAllocator, Page, PageSize, PageTableFlags as Flags, PhysFrame, Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
 };
 use xmas_elf::{
-    header,
-    program::{self, ProgramHeader, Type},
+    dynamic, header,
+    program::{self, ProgramHeader, SegmentData, Type},
+    sections::Rela,
     ElfFile,
 };
 
-/// Memory addresses required for the context switch.
-pub struct Addresses {
-    page_table: PhysFrame,
-    stack_top: VirtAddr,
-    entry_point: VirtAddr,
-    boot_info: &'static BootInfo
-}
+use crate::PAGE_SIZE;
 
-pub struct Kernel<'a> {
-    pub elf: ElfFile<'a>,
-    pub start_address: *const u8,
-    pub len: usize,
-}
+use super::Kernel;
 
-impl<'a> Kernel<'a> {
-    pub fn parse(kernel_slice: &'a [u8]) -> Self {
-        let kernel_elf = ElfFile::new(kernel_slice).unwrap();
-        Kernel {
-            elf: kernel_elf,
-            start_address: kernel_slice.as_ptr(),
-            len: kernel_slice.len(),
-        }
-    }
-}
+/// Used by [`Inner::make_mut`] and [`Inner::clean_copied_flag`].
+const COPIED: Flags = Flags::BIT_9;
 
 struct Loader<'a, M, F> {
     elf_file: ElfFile<'a>,
-    inner: Inner<'a, M, F>
+    inner: Inner<'a, M, F>,
 }
 
 struct Inner<'a, M, F> {
     kernel_offset: PhysAddr,
-    virtual_address_offset: VirtAddr,
+    virtual_address_offset: VirtualAddressOffset,
     page_table: &'a mut M,
     frame_allocator: &'a mut F,
 }
 
-pub fn load_elf(
-    st: &mut SystemTable<Boot>,
-) -> Option<Kernel<'static>> {
-    let kernel_slice = load_file_from_disk(cstr16!("kernel.elf"), st)?;
-    log::info!("Loaded kernel ELF");
-    Some(Kernel::parse(kernel_slice))
-}
-
 impl<'a, M, F> Loader<'a, M, F>
 where
-    M: Mapper<Size4KiB> + Translate,
+    M: MapperAllSizes + Translate,
     F: FrameAllocator<Size4KiB>,
 {
     fn new(
         kernel: Kernel<'a>,
         page_table: &'a mut M,
         frame_allocator: &'a mut F,
+        used_entries: &mut UsedLevel4Entries,
     ) -> Result<Self, &'static str> {
         log::info!("Elf file loaded at {:#p}", kernel.elf.input);
         let kernel_offset = PhysAddr::new(&kernel.elf.input[0] as *const u8 as u64);
@@ -85,11 +61,17 @@ where
         let virtual_address_offset = match elf_file.header.pt2.type_().as_type() {
             header::Type::None => unimplemented!(),
             header::Type::Relocatable => unimplemented!(),
-            header::Type::Executable => VirtAddr::zero(),
-            header::Type::SharedObject => VirtAddr::new(0xFFFFFFFF80000000),
+            header::Type::Executable => VirtualAddressOffset::zero(),
+            header::Type::SharedObject => VirtualAddressOffset::new(0xFFFFFFFF80000000),
             header::Type::Core => unimplemented!(),
             header::Type::ProcessorSpecific(_) => unimplemented!(),
         };
+        log::info!(
+            "virtual_address_offset: {:#x}",
+            virtual_address_offset.virtual_address_offset()
+        );
+
+        used_entries.mark_segments(elf_file.program_iter(), virtual_address_offset);
 
         header::sanity_check(&elf_file)?;
         let loader = Loader {
@@ -105,24 +87,60 @@ where
         Ok(loader)
     }
 
-    fn load_segments(&mut self) -> Result<(), &'static str> {
+    fn load_segments(&mut self) -> Result<Option<TlsTemplate>, &'static str> {
         // Load the segments into virtual memory.
+        let mut tls_template = None;
         for program_header in self.elf_file.program_iter() {
-            if program_header.get_type()? == Type::Load {
-                self.inner.handle_load_segment(program_header)?
+            match program_header.get_type()? {
+                Type::Load => self.inner.handle_load_segment(program_header)?,
+                Type::Tls => {
+                    if tls_template.is_none() {
+                        tls_template = Some(self.inner.handle_tls_segment(program_header)?);
+                    } else {
+                        return Err("multiple TLS segments not supported");
+                    }
+                }
+                Type::Null
+                | Type::Dynamic
+                | Type::Interp
+                | Type::Note
+                | Type::ShLib
+                | Type::Phdr
+                | Type::GnuRelro
+                | Type::OsSpecific(_)
+                | Type::ProcessorSpecific(_) => {}
             }
         }
-        Ok(())
+
+        // Apply relocations in virtual memory.
+        for program_header in self.elf_file.program_iter() {
+            if let Type::Dynamic = program_header.get_type()? {
+                self.inner
+                    .handle_dynamic_segment(program_header, &self.elf_file)?
+            }
+        }
+
+        // Mark some memory regions as read-only after relocations have been
+        // applied.
+        for program_header in self.elf_file.program_iter() {
+            if let Type::GnuRelro = program_header.get_type()? {
+                self.inner.handle_relro_segment(program_header);
+            }
+        }
+
+        self.inner.remove_copied_flags(&self.elf_file).unwrap();
+
+        Ok(tls_template)
     }
 
     fn entry_point(&self) -> VirtAddr {
-        self.inner.virtual_address_offset + self.elf_file.header.pt2.entry_point()
+        VirtAddr::new(self.inner.virtual_address_offset + self.elf_file.header.pt2.entry_point())
     }
 }
 
 impl<'a, M, F> Inner<'a, M, F>
 where
-    M: Mapper<Size4KiB> + Translate,
+    M: MapperAllSizes + Translate,
     F: FrameAllocator<Size4KiB>,
 {
     fn handle_load_segment(&mut self, segment: ProgramHeader) -> Result<(), &'static str> {
@@ -133,7 +151,7 @@ where
         let end_frame: PhysFrame =
             PhysFrame::containing_address(phys_start_addr + segment.file_size() - 1u64);
 
-        let virt_start_addr = self.virtual_address_offset + segment.virtual_addr();
+        let virt_start_addr = VirtAddr::new(self.virtual_address_offset + segment.virtual_addr());
         let start_page: Page = Page::containing_address(virt_start_addr);
 
         let mut segment_flags = Flags::PRESENT;
@@ -182,7 +200,7 @@ where
     ) -> Result<(), &'static str> {
         log::info!("Mapping bss section");
 
-        let virt_start_addr = self.virtual_address_offset + segment.virtual_addr();
+        let virt_start_addr = VirtAddr::new(self.virtual_address_offset + segment.virtual_addr());
         let mem_size = segment.mem_size();
         let file_size = segment.file_size();
 
@@ -227,7 +245,7 @@ where
             // the remaining part of the frame since the frame is no longer shared with other
             // segments now.
 
-            let last_page: Page<> = Page::containing_address(virt_start_addr + file_size - 1u64);
+            let last_page = Page::containing_address(virt_start_addr + file_size - 1u64);
             let new_frame = unsafe { self.make_mut(last_page) };
             let new_bytes_ptr = new_frame.start_address().as_u64() as *mut u8;
             unsafe {
@@ -273,6 +291,153 @@ where
         Ok(())
     }
 
+    /// Copy from the kernel address space.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if a page is not mapped in `self.page_table`.
+    fn copy_from(&self, addr: VirtAddr, buf: &mut [u8]) {
+        // We can't know for sure that contiguous virtual address are contiguous
+        // in physical memory, so we iterate of the pages spanning the
+        // addresses, translate them to frames and copy the data.
+
+        let end_inclusive_addr = Step::forward_checked(addr, buf.len() - 1)
+            .expect("end address outside of the virtual address space");
+        let start_page = Page::<Size4KiB>::containing_address(addr);
+        let end_inclusive_page = Page::<Size4KiB>::containing_address(end_inclusive_addr);
+
+        for page in start_page..=end_inclusive_page {
+            // Translate the virtual page to the physical frame.
+            let phys_addr = self
+                .page_table
+                .translate_page(page)
+                .expect("address is not mapped to the kernel's memory space");
+
+            // Figure out which address range we want to copy from the frame.
+
+            // This page covers these addresses.
+            let page_start = page.start_address();
+            let page_end_inclusive = page.start_address() + 4095u64;
+
+            // We want to copy from the following address in this frame.
+            let start_copy_address = cmp::max(addr, page_start);
+            let end_inclusive_copy_address = cmp::min(end_inclusive_addr, page_end_inclusive);
+
+            // These are the offsets into the frame we want to copy from.
+            let start_offset_in_frame = (start_copy_address - page_start) as usize;
+            let end_inclusive_offset_in_frame = (end_inclusive_copy_address - page_start) as usize;
+
+            // Calculate how many bytes we want to copy from this frame.
+            let copy_len = end_inclusive_offset_in_frame - start_offset_in_frame + 1;
+
+            // Calculate the physical addresses.
+            let start_phys_addr = phys_addr.start_address() + start_offset_in_frame;
+
+            // These are the offsets from the start address. These correspond
+            // to the destination indices in `buf`.
+            let start_offset_in_buf = Step::steps_between(&addr, &start_copy_address).unwrap();
+
+            // Calculate the source slice.
+            // Utilize that frames are identity mapped.
+            let src_ptr = start_phys_addr.as_u64() as *const u8;
+            let src = unsafe {
+                // SAFETY: We know that this memory is valid because we got it
+                // as a result from a translation. There are not other
+                // references to it.
+                &*core::ptr::slice_from_raw_parts(src_ptr, copy_len)
+            };
+
+            // Calculate the destination pointer.
+            let dest = &mut buf[start_offset_in_buf..][..copy_len];
+
+            // Do the actual copy.
+            dest.copy_from_slice(src);
+        }
+    }
+
+    /// Write to the kernel address space.
+    ///
+    /// ## Safety
+    /// - `addr` should refer to a page mapped by a Load segment.
+    ///  
+    /// ## Panics
+    ///
+    /// Panics if a page is not mapped in `self.page_table`.
+    unsafe fn copy_to(&mut self, addr: VirtAddr, buf: &[u8]) {
+        // We can't know for sure that contiguous virtual address are contiguous
+        // in physical memory, so we iterate of the pages spanning the
+        // addresses, translate them to frames and copy the data.
+
+        let end_inclusive_addr = Step::forward_checked(addr, buf.len() - 1)
+            .expect("the end address should be in the virtual address space");
+        let start_page = Page::<Size4KiB>::containing_address(addr);
+        let end_inclusive_page = Page::<Size4KiB>::containing_address(end_inclusive_addr);
+
+        for page in start_page..=end_inclusive_page {
+            // Translate the virtual page to the physical frame.
+            let phys_addr = unsafe {
+                // SAFETY: The caller asserts that the pages are mapped by a Load segment.
+                self.make_mut(page)
+            };
+
+            // Figure out which address range we want to copy from the frame.
+
+            // This page covers these addresses.
+            let page_start = page.start_address();
+            let page_end_inclusive = page.start_address() + 4095u64;
+
+            // We want to copy from the following address in this frame.
+            let start_copy_address = cmp::max(addr, page_start);
+            let end_inclusive_copy_address = cmp::min(end_inclusive_addr, page_end_inclusive);
+
+            // These are the offsets into the frame we want to copy from.
+            let start_offset_in_frame = (start_copy_address - page_start) as usize;
+            let end_inclusive_offset_in_frame = (end_inclusive_copy_address - page_start) as usize;
+
+            // Calculate how many bytes we want to copy from this frame.
+            let copy_len = end_inclusive_offset_in_frame - start_offset_in_frame + 1;
+
+            // Calculate the physical addresses.
+            let start_phys_addr = phys_addr.start_address() + start_offset_in_frame;
+
+            // These are the offsets from the start address. These correspond
+            // to the destination indices in `buf`.
+            let start_offset_in_buf = Step::steps_between(&addr, &start_copy_address).unwrap();
+
+            // Calculate the source slice.
+            // Utilize that frames are identity mapped.
+            let dest_ptr = start_phys_addr.as_u64() as *mut u8;
+            let dest = unsafe {
+                // SAFETY: We know that this memory is valid because we got it
+                // as a result from a translation. There are not other
+                // references to it.
+                &mut *core::ptr::slice_from_raw_parts_mut(dest_ptr, copy_len)
+            };
+
+            // Calculate the destination pointer.
+            let src = &buf[start_offset_in_buf..][..copy_len];
+
+            // Do the actual copy.
+            dest.copy_from_slice(src);
+        }
+    }
+
+    /// This method is intended for making the memory loaded by a Load segment mutable.
+    ///
+    /// All memory from a Load segment starts out by mapped to the same frames that
+    /// contain the elf file. Thus writing to memory in that state will cause aliasing issues.
+    /// To avoid that, we allocate a new frame, copy all bytes from the old frame to the new frame,
+    /// and remap the page to the new frame. At this point the page no longer aliases the elf file
+    /// and we can write to it.
+    ///
+    /// When we map the new frame we also set [`COPIED`] flag in the page table flags, so that
+    /// we can detect if the frame has already been copied when we try to modify the page again.
+    ///
+    /// ## Safety
+    /// - `page` should be a page mapped by a Load segment.
+    ///  
+    /// ## Panics
+    /// Panics if the page is not mapped in `self.page_table`.
     unsafe fn make_mut(&mut self, page: Page) -> PhysFrame {
         let (frame, flags) = match self.page_table.translate(page.start_address()) {
             TranslateResult::Mapped {
@@ -290,6 +455,11 @@ where
             unreachable!()
         };
 
+        if flags.contains(COPIED) {
+            // The frame was already copied, we are free to modify it.
+            return frame;
+        }
+
         // Allocate a new frame and copy the memory, utilizing that both frames are identity mapped.
         let new_frame = self.frame_allocator.allocate_frame().unwrap();
         let frame_ptr = frame.start_address().as_u64() as *const u8;
@@ -300,7 +470,7 @@ where
 
         // Replace the underlying frame and update the flags.
         self.page_table.unmap(page).unwrap().1.ignore();
-        let new_flags = flags;
+        let new_flags = flags | COPIED;
         unsafe {
             self.page_table
                 .map_to(page, new_frame, new_flags, self.frame_allocator)
@@ -310,6 +480,236 @@ where
 
         new_frame
     }
+
+    /// Cleans up the custom flags set by [`Inner::make_mut`].
+    fn remove_copied_flags(&mut self, elf_file: &ElfFile) -> Result<(), &'static str> {
+        for program_header in elf_file.program_iter() {
+            if let Type::Load = program_header.get_type()? {
+                let start = self.virtual_address_offset + program_header.virtual_addr();
+                let end = start + program_header.mem_size();
+                let start = VirtAddr::new(start);
+                let end = VirtAddr::new(end);
+                let start_page = Page::containing_address(start);
+                let end_page = Page::containing_address(end - 1u64);
+                for page in Page::<Size4KiB>::range_inclusive(start_page, end_page) {
+                    // Translate the page and get the flags.
+                    let res = self.page_table.translate(page.start_address());
+                    let flags = match res {
+                        TranslateResult::Mapped {
+                            frame: _,
+                            offset: _,
+                            flags,
+                        } => flags,
+                        TranslateResult::NotMapped | TranslateResult::InvalidFrameAddress(_) => {
+                            unreachable!("has the elf file not been mapped correctly?")
+                        }
+                    };
+
+                    if flags.contains(COPIED) {
+                        // Remove the flag.
+                        unsafe {
+                            self.page_table
+                                .update_flags(page, flags & !COPIED)
+                                .unwrap()
+                                .ignore();
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_tls_segment(&mut self, segment: ProgramHeader) -> Result<TlsTemplate, &'static str> {
+        Ok(TlsTemplate {
+            start_addr: self.virtual_address_offset + segment.virtual_addr(),
+            mem_size: segment.mem_size(),
+            file_size: segment.file_size(),
+        })
+    }
+
+    fn handle_dynamic_segment(
+        &mut self,
+        segment: ProgramHeader,
+        elf_file: &ElfFile,
+    ) -> Result<(), &'static str> {
+        let data = segment.get_data(elf_file)?;
+        let data = if let SegmentData::Dynamic64(data) = data {
+            data
+        } else {
+            panic!("expected Dynamic64 segment")
+        };
+
+        // Find the `Rela`, `RelaSize` and `RelaEnt` entries.
+        let mut rela = None;
+        let mut rela_size = None;
+        let mut rela_ent = None;
+        for rel in data {
+            let tag = rel.get_tag()?;
+            match tag {
+                dynamic::Tag::Rela => {
+                    let ptr = rel.get_ptr()?;
+                    let prev = rela.replace(ptr);
+                    if prev.is_some() {
+                        return Err("Dynamic section contains more than one Rela entry");
+                    }
+                }
+                dynamic::Tag::RelaSize => {
+                    let val = rel.get_val()?;
+                    let prev = rela_size.replace(val);
+                    if prev.is_some() {
+                        return Err("Dynamic section contains more than one RelaSize entry");
+                    }
+                }
+                dynamic::Tag::RelaEnt => {
+                    let val = rel.get_val()?;
+                    let prev = rela_ent.replace(val);
+                    if prev.is_some() {
+                        return Err("Dynamic section contains more than one RelaEnt entry");
+                    }
+                }
+                _ => {}
+            }
+        }
+        let offset = if let Some(rela) = rela {
+            rela
+        } else {
+            // The section doesn't contain any relocations.
+
+            if rela_size.is_some() || rela_ent.is_some() {
+                return Err("Rela entry is missing but RelaSize or RelaEnt have been provided");
+            }
+
+            return Ok(());
+        };
+        let total_size = rela_size.ok_or("RelaSize entry is missing")?;
+        let entry_size = rela_ent.ok_or("RelaEnt entry is missing")?;
+
+        // Make sure that the reported size matches our `Rela<u64>`.
+        assert_eq!(
+            entry_size,
+            size_of::<Rela<u64>>() as u64,
+            "unsupported entry size: {entry_size}"
+        );
+
+        // Apply the relocations.
+        let num_entries = total_size / entry_size;
+        for idx in 0..num_entries {
+            let rela = self.read_relocation(offset, idx);
+            self.apply_relocation(rela, elf_file)?;
+        }
+
+        Ok(())
+    }
+
+    /// Reads a relocation from a relocation table.
+    fn read_relocation(&self, relocation_table: u64, idx: u64) -> Rela<u64> {
+        // Calculate the address of the entry in the relocation table.
+        let offset = relocation_table + size_of::<Rela<u64>>() as u64 * idx;
+        let value = self.virtual_address_offset + offset;
+        let addr = VirtAddr::try_new(value).expect("relocation table is outside the address space");
+
+        // Read the Rela from the kernel address space.
+        let mut buf = [0; 24];
+        self.copy_from(addr, &mut buf);
+
+        // Convert the bytes we read into a `Rela<u64>`.
+        unsafe {
+            // SAFETY: Any bitpattern is valid for `Rela<u64>` and buf is
+            // valid for reads.
+            core::ptr::read_unaligned(&buf as *const u8 as *const Rela<u64>)
+        }
+    }
+
+    fn apply_relocation(
+        &mut self,
+        rela: Rela<u64>,
+        elf_file: &ElfFile,
+    ) -> Result<(), &'static str> {
+        let symbol_idx = rela.get_symbol_table_index();
+        assert_eq!(
+            symbol_idx, 0,
+            "relocations using the symbol table are not supported"
+        );
+
+        match rela.get_type() {
+            // R_AMD64_RELATIVE
+            8 => {
+                // Make sure that the relocation happens in memory mapped
+                // by a Load segment.
+                check_is_in_load(elf_file, rela.get_offset())?;
+
+                // Calculate the destination of the relocation.
+                let addr = self.virtual_address_offset + rela.get_offset();
+                let addr = VirtAddr::new(addr);
+
+                // Calculate the relocated value.
+                let value = self.virtual_address_offset + rela.get_addend();
+
+                // Write the relocated value to memory.
+                unsafe {
+                    // SAFETY: We just verified that the address is in a Load segment.
+                    self.copy_to(addr, &value.to_ne_bytes());
+                }
+            }
+            ty => unimplemented!("relocation type {:x} not supported", ty),
+        }
+
+        Ok(())
+    }
+
+    /// Mark a region of memory indicated by a GNU_RELRO segment as read-only.
+    ///
+    /// This is a security mitigation used to protect memory regions that
+    /// need to be writable while applying relocations, but should never be
+    /// written to after relocations have been applied.
+    fn handle_relro_segment(&mut self, program_header: ProgramHeader) {
+        let start = self.virtual_address_offset + program_header.virtual_addr();
+        let end = start + program_header.mem_size();
+        let start = VirtAddr::new(start);
+        let end = VirtAddr::new(end);
+        let start_page = Page::containing_address(start);
+        let end_page = Page::containing_address(end - 1u64);
+        for page in Page::<Size4KiB>::range_inclusive(start_page, end_page) {
+            // Translate the page and get the flags.
+            let res = self.page_table.translate(page.start_address());
+            let flags = match res {
+                TranslateResult::Mapped {
+                    frame: _,
+                    offset: _,
+                    flags,
+                } => flags,
+                TranslateResult::NotMapped | TranslateResult::InvalidFrameAddress(_) => {
+                    unreachable!("has the elf file not been mapped correctly?")
+                }
+            };
+
+            if flags.contains(Flags::WRITABLE) {
+                // Remove the WRITABLE flag.
+                unsafe {
+                    self.page_table
+                        .update_flags(page, flags & !Flags::WRITABLE)
+                        .unwrap()
+                        .ignore();
+                }
+            }
+        }
+    }
+}
+
+/// Check that the virtual offset belongs to a load segment.
+fn check_is_in_load(elf_file: &ElfFile, virt_offset: u64) -> Result<(), &'static str> {
+    for program_header in elf_file.program_iter() {
+        if let Type::Load = program_header.get_type()? {
+            if program_header.virtual_addr() <= virt_offset {
+                let offset_in_segment = virt_offset - program_header.virtual_addr();
+                if offset_in_segment < program_header.mem_size() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err("offset is not in load segment")
 }
 
 /// Loads the kernel ELF file given in `bytes` in the given `page_table`.
@@ -318,115 +718,16 @@ where
 /// and a structure describing which level 4 page table entries are in use.  
 pub fn load_kernel(
     kernel: Kernel<'_>,
-    page_table: &mut (impl Mapper<Size4KiB> + Translate),
+    page_table: &mut (impl MapperAllSizes + Translate),
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-) -> Result<VirtAddr, &'static str> {
-    let mut loader = Loader::new(kernel, page_table, frame_allocator)?;
-    loader.load_segments()?;
+    used_entries: &mut UsedLevel4Entries,
+) -> Result<(VirtAddr, VirtAddr, Option<TlsTemplate>), &'static str> {
+    let mut loader = Loader::new(kernel, page_table, frame_allocator, used_entries)?;
+    let tls_template = loader.load_segments()?;
 
-    Ok(loader.entry_point())
-}
-
-/// Switches to the kernel address space and jumps to the kernel entry point.
-pub fn switch_to_kernel(
-    system_info: &SystemInfo,
-    boot_info: &'static BootInfo,
-) -> ! {
-    let addresses = Addresses {
-        page_table: PhysFrame::containing_address(PhysAddr::new(system_info.page_table.as_ref().unwrap().level_4_table() as *const _ as u64)),
-        stack_top: system_info.stack_top.unwrap(),
-        entry_point: system_info.entry.unwrap(),
-        boot_info
-    };
-
-    log::info!(
-        "Jumping to kernel entry point at {:?}",
-        addresses.entry_point
-    );
-
-    unsafe {
-        context_switch(addresses);
-    }
-}
-
-/// Performs the actual context switch.
-pub unsafe fn context_switch(addresses: Addresses) -> ! {
-    unsafe {
-        asm!(
-            r#"
-            xor rbp, rbp
-            mov cr3, {}
-            mov rsp, {}
-            push 0
-            jmp {}
-            "#,
-            in(reg) addresses.page_table.start_address().as_u64(),
-            in(reg) addresses.stack_top.as_u64(),
-            in(reg) addresses.entry_point.as_u64(),
-            in("rdi") addresses.boot_info as *const _ as usize,
-        );
-    }
-    unreachable!();
-}
-
-/// Loads the kernel ELF executable into memory and switches to it.
-///
-/// This function is a convenience function that first calls [`set_up_mappings`], then
-/// [`create_boot_info`], and finally [`switch_to_kernel`]. The given arguments are passed
-/// directly to these functions, so see their docs for more info.
-pub fn load_and_switch_to_kernel(
-    kernel: Kernel,
-    frame_allocator: &mut MMAPFrameAllocator,
-    system_info: &mut SystemInfo,
-) -> ! {
-    set_up_mappings(
-        kernel,
-        frame_allocator,
-        system_info
-    );
-    let boot_info = create_boot_info(
-        frame_allocator,
-        system_info,
-    ).unwrap();
-    switch_to_kernel(system_info, boot_info);
-}
-
-
-fn load_file_from_disk(
-    name: &CStr16,
-    st: &SystemTable<Boot>,
-) -> Option<&'static mut [u8]> {
-    let mut fsp = st.boot_services().get_image_file_system(st.boot_services().image_handle())
-        .expect("Failed to open SimpleFileSystem protocol");
-
-    let mut root_dir = fsp.open_volume()
-        .expect("Error opening root directory");
-
-    let file = root_dir
-        .open(name, FileMode::Read, FileAttribute::READ_ONLY)
-        .expect("Error opening kernel ELF file");
-    let mut file = file.into_regular_file().expect("Failed to turn FileHandle -> RegularFile");
-
-    let mut buf = unsafe {
-        slice::from_raw_parts_mut(
-            st.boot_services().allocate_pool(MemoryType::LOADER_DATA, 500).unwrap(),
-            500
-        )
-    };
-    let file_info: &mut FileInfo = file.get_info(&mut buf).unwrap();
-    let file_size = usize::try_from(file_info.file_size()).unwrap();
-    unsafe { st.boot_services().free_pool(buf.as_mut_ptr()) }.unwrap();
-    let file_ptr = st
-        .boot_services()
-        .allocate_pages(
-            AllocateType::AnyPages,
-            MemoryType::LOADER_DATA,
-            ((file_size - 1) / 4096) + 1,
-        )
-        .unwrap() as *mut u8;
-    unsafe { file_ptr.write_bytes(0, file_size) };
-    let file_slice = unsafe { slice::from_raw_parts_mut(file_ptr, file_size) };
-    file.read(file_slice).unwrap();
-
-    Some(file_slice)
+    Ok((
+        VirtAddr::new(loader.inner.virtual_address_offset.virtual_address_offset() as u64),
+        loader.entry_point(),
+        tls_template,
+    ))
 }

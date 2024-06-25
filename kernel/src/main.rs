@@ -1,21 +1,29 @@
 #![no_std]
 #![no_main]
-
-use core::fmt::Write;
+#![feature(abi_x86_interrupt)]
+#![feature(naked_functions)]
+#![feature(asm_const)]
 use core::panic::PanicInfo;
 
-use common::BootInfo;
-use mem::BitmapFrameAllocator;
-use uart_16550::SerialPort;
+use bootloader_api::{entry_point, BootInfo, BootloaderConfig};
 
-mod mem;
-mod gdt;
+mod logger;
+mod drivers;
+mod cpu;
 
-#[no_mangle]
-pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
-    common::logger::init_logger(None);
-    // gdt::init_gdt();
-    // let frame_allocator = BitmapFrameAllocator::new(&boot_info.mmap, boot_info.ffa);
+const CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.kernel_stack_size = 4096;
+    config
+};
+
+entry_point!(kernel_main, config = &CONFIG);
+fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    logger::init_logger(boot_info.framebuffer.as_mut());
+    log::info!("Entered kernel");
+
+    cpu::gdt::init_gdt();
+    cpu::idt::init_idt();
     loop {}
 }
 
